@@ -6,3 +6,21 @@ frontend/node_modules/
 .env
 backend/data/*.json
 .DS_Store
+.db
+# environment
+.env
+
+# database
+*.db
+
+# cache / logs
+backend/data/
+*.log
+
+# python
+__pycache__/
+*.pyc
+
+# playwright / screenshots
+backend/data/debug_screenshots/
+backend/data/debug_links_*.txt

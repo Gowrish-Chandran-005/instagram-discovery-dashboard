@@ -1,19 +1,45 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import './App.css';
 
 function ProfileCard({ profile }) {
+  // Format numbers nicely
+  const formatNumber = (num) => {
+    if (num === null || num === undefined) return 'N/A';
+    return Number(num).toLocaleString();
+  };
+
   return (
-    <div style={{ border: '1px solid #ddd', padding: 12, marginBottom: 12, borderRadius: 6 }}>
-      <h3>@{profile.username}</h3>
-      <div style={{ display: 'flex', gap: 12 }}>
-        <img src={profile.profile_image || ''} alt="profile" style={{ width: 96, height: 96, objectFit: 'cover' }} />
-        <div>
-          <p><strong>Bio:</strong> {profile.bio}</p>
-          <p><strong>Followers:</strong> {profile.followers?.toLocaleString()}</p>
-          <p><strong>Following:</strong> {profile.following?.toLocaleString()}</p>
-          <p><strong>Posts:</strong> {profile.posts?.toLocaleString()}</p>
-          <p><strong>Website:</strong> <a href={profile.website} target="_blank" rel="noreferrer">{profile.website}</a></p>
-          <p><strong>Methods:</strong> {profile.extraction_methods?.join(', ')}</p>
+    <div className="profile-card">
+      <div className="profile-image-container">
+        <img 
+          src={profile.profile_image || 'https://via.placeholder.com/120?text=No+Image'} 
+          alt={`${profile.username} profile`} 
+          className="profile-image" 
+          onError={(e) => { e.target.src = 'https://via.placeholder.com/120?text=No+Image'; }}
+        />
+      </div>
+      <div className="profile-info">
+        <h3 className="profile-username">@{profile.username}</h3>
+        
+        <div className="profile-stats">
+          <span><strong>{formatNumber(profile.posts)}</strong> posts</span>
+          <span><strong>{formatNumber(profile.followers)}</strong> followers</span>
+          <span><strong>{formatNumber(profile.following)}</strong> following</span>
         </div>
+        
+        <div className="profile-bio">
+          {profile.bio || 'No bio available'}
+        </div>
+        
+        {profile.website && (
+          <div className="profile-website">
+            🔗 <a href={profile.website} target="_blank" rel="noreferrer">{profile.website}</a>
+          </div>
+        )}
+        
+        <p className="profile-methods">
+          Extraction Methods: {profile.extraction_methods?.join(', ') || 'None'}
+        </p>
       </div>
     </div>
   );
@@ -24,52 +50,124 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [error, setError] = useState(null);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [progressMsg, setProgressMsg] = useState('');
+
+  // Auto-update progress message to simulate extraction steps
+  useEffect(() => {
+    let interval;
+    if (loading) {
+      const messages = [
+        'Searching DuckDuckGo for Instagram profiles...',
+        'Discovering new usernames...',
+        'Filtering and removing duplicates...',
+        'Extracting metadata (this may take a few minutes)...',
+        'Extracting metadata (this may take a few minutes)...',
+        'Still extracting, please wait...',
+      ];
+      let i = 0;
+      setProgressMsg(messages[0]);
+      interval = setInterval(() => {
+        i++;
+        if (i < messages.length) {
+          setProgressMsg(messages[i]);
+        }
+      }, 8000);
+    }
+    return () => clearInterval(interval);
+  }, [loading]);
 
   async function handleSearch(e) {
     e.preventDefault();
+    if (!keyword.trim()) return;
+
     setLoading(true);
     setError(null);
     setProfiles([]);
-    try {
-      const url = `http://localhost:5000/search?keyword=${encodeURIComponent(keyword)}&headless=1`;
-      const res = await fetch(url);
+    setHasSearched(false);
+    
+    // Set a timeout of 10 minutes to prevent infinite loading
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000);
 
-      // Read response as text first to handle non-JSON errors
+    try {
+      const url = `http://localhost:5000/search?keyword=${encodeURIComponent(keyword.trim())}&headless=1`;
+      const res = await fetch(url, { signal: controller.signal });
+
       const text = await res.text();
       let data;
       try {
         data = JSON.parse(text);
       } catch (parseErr) {
-        throw new Error(`Invalid JSON response from backend: ${text.slice(0, 200)}`);
+        throw new Error(`Invalid JSON response from backend: ${text.slice(0, 100)}...`);
       }
 
+      // Allow either success=true or the presence of profiles to mark success
       if (!res.ok) {
         const msg = data.error || JSON.stringify(data);
         throw new Error(`Backend error: ${msg}`);
       }
+      
+      // Even if ok, we should check if there was a server error disguised as success
+      if (data.error && !data.success) {
+        throw new Error(`Backend error: ${data.error}`);
+      }
 
       setProfiles(data.profiles || []);
     } catch (err) {
-      setError(err.message);
+      if (err.name === 'AbortError') {
+        setError('Request timed out. The extraction process took too long.');
+      } else {
+        setError(err.message);
+      }
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
+      setHasSearched(true);
     }
   }
 
   return (
-    <div style={{ maxWidth: 900, margin: '24px auto', fontFamily: 'Arial, sans-serif' }}>
+    <div className="container">
       <h1>Instagram Discovery Dashboard</h1>
-      <form onSubmit={handleSearch} style={{ marginBottom: 16 }}>
-        <input value={keyword} onChange={e => setKeyword(e.target.value)} style={{ padding: 8, width: '60%' }} />
-        <button type="submit" style={{ padding: '8px 12px', marginLeft: 8 }} disabled={loading}>{loading ? 'Running...' : 'Search'}</button>
+      
+      <form onSubmit={handleSearch} className="search-form">
+        <input 
+          value={keyword} 
+          onChange={e => setKeyword(e.target.value)} 
+          className="search-input"
+          placeholder="Enter keyword (e.g. posters, sarees, boutique)..."
+          disabled={loading}
+        />
+        <button type="submit" className="search-button" disabled={loading || !keyword.trim()}>
+          {loading ? 'Searching...' : 'Discover & Extract'}
+        </button>
       </form>
 
-      {loading && <p>Running discovery and extraction... this may take a few minutes.</p>}
-      {error && <p style={{ color: 'red' }}>Error: {error}</p>}
+      {loading && (
+        <div className="loading-container">
+          <div className="spinner"></div>
+          <p><strong>Running extraction pipeline...</strong></p>
+          <p style={{ color: '#5f6368' }}>{progressMsg}</p>
+        </div>
+      )}
 
-      {profiles.length > 0 && (
+      {error && (
+        <div className="error-message">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      {!loading && !error && hasSearched && profiles.length === 0 && (
+        <div className="no-results">
+          <h3>No profiles found</h3>
+          <p>We couldn't find any relevant Instagram profiles for "{keyword}". Try another keyword.</p>
+        </div>
+      )}
+
+      {!loading && profiles.length > 0 && (
         <div>
-          <h2>Profiles</h2>
+          <h2>Discovered Profiles ({profiles.length})</h2>
           {profiles.map((p, i) => (
             <ProfileCard profile={p} key={i} />
           ))}

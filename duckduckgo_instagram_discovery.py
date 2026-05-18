@@ -37,6 +37,7 @@ import time
 import random
 import traceback
 import os
+import urllib.parse
 from typing import List, Set, Dict, Any
 from datetime import datetime
 
@@ -65,7 +66,14 @@ colorama_init(autoreset=True)
 
 def get_user_agent() -> str:
     """Return a polite user agent string."""
-    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    uas = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
+    ]
+    return random.choice(uas)
 
 
 def prompt_keyword() -> str:
@@ -74,52 +82,101 @@ def prompt_keyword() -> str:
     return kw
 
 
-def search_duckduckgo(query: str, page: int = 1) -> str | None:
-    """Fetch DuckDuckGo search results for the given query and page.
+def search_bing(query: str, page: int = 1, session=None) -> str | None:
+    """Fetch Bing search results for the given query and page.
 
     Args:
         query: Search query string
         page: Page number (1-indexed)
+        session: requests.Session object for connection reuse
 
     Returns HTML content or None on failure.
     """
-    print(f"[INFO] Searching DuckDuckGo for: {query} (page {page})")
-    url = "https://duckduckgo.com/html/"
+    print(f"[INFO] Searching Bing for: {query} (page {page})")
+    url = "https://www.bing.com/search"
     
-    # DuckDuckGo pagination: s parameter represents offset
-    # Page 1 = no offset, Page 2 = 30, Page 3 = 60, etc.
-    offset = (page - 1) * 30
+    # Bing pagination
+    offset = (page - 1) * 10 + 1
     
     params = {
         "q": query,
-        "s": offset if page > 1 else None,  # s parameter for pagination
+        "first": offset if page > 1 else None,
     }
     # Remove None values from params
     params = {k: v for k, v in params.items() if v is not None}
     
-    headers = {
-        "User-Agent": get_user_agent(),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
+    req_method = session.get if session else requests.get
+    max_retries = 3
 
-    try:
-        print(f"[DEBUG] Sending request to DuckDuckGo (page {page}, offset {offset})...")
-        response = requests.get(url, params=params, headers=headers, timeout=30)
-        response.raise_for_status()
-        print(f"[SUCCESS] Got response with status {response.status_code} (page {page})")
-        print(f"[DEBUG] Response size: {len(response.text)} bytes")
-        return response.text
-    except requests.Timeout:
-        print(f"[ERROR] Request timed out (30s) on page {page}")
-        return None
-    except requests.RequestException as e:
-        print(f"[ERROR] Request failed on page {page}: {e}")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Unexpected error during search on page {page}: {e}")
-        traceback.print_exc()
-        return None
+    for attempt in range(1, max_retries + 1):
+        headers = {
+            "User-Agent": get_user_agent(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.bing.com/",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1"
+        }
+
+        try:
+            print(f"[DEBUG] Sending request to Bing (page {page}, offset {offset}, attempt {attempt})...")
+            response = req_method(url, params=params, headers=headers, timeout=15)
+            
+            if response.status_code == 202:
+                print(f"{Fore.YELLOW if 'Fore' in globals() else ''}[WARNING] Bing anti-bot page detected (Status 202){Style.RESET_ALL if 'Style' in globals() else ''}")
+                if attempt < max_retries:
+                    delay = random.uniform(3, 7)
+                    print(f"[INFO] Retrying request in {delay:.2f}s...")
+                    time.sleep(delay)
+                    continue
+                return None
+
+            response.raise_for_status()
+            
+            # Validate search page contents
+            soup = BeautifulSoup(response.text, "html.parser")
+            anchors = soup.find_all("a")
+            
+            # Typical search results have many anchors. Less than 5 indicates challenge page or blocked IP.
+            if len(anchors) < 5 or "captcha" in response.text.lower():
+                print(f"{Fore.YELLOW if 'Fore' in globals() else ''}[WARNING] Bing anti-bot/captcha page detected{Style.RESET_ALL if 'Style' in globals() else ''}")
+                if attempt < max_retries:
+                    delay = random.uniform(3, 7)
+                    print(f"[INFO] Retrying request in {delay:.2f}s...")
+                    time.sleep(delay)
+                    continue
+                return None
+
+            print(f"{Fore.GREEN if 'Fore' in globals() else ''}[SUCCESS] Bing returned valid search results{Style.RESET_ALL if 'Style' in globals() else ''} (status {response.status_code})")
+            print(f"[DEBUG] Response size: {len(response.text)} bytes")
+            return response.text
+
+        except requests.Timeout:
+            print(f"[ERROR] Request timed out (15s) on page {page}, attempt {attempt}")
+            if attempt < max_retries:
+                delay = random.uniform(3, 7)
+                print(f"[INFO] Retrying request in {delay:.2f}s...")
+                time.sleep(delay)
+                continue
+            return None
+        except requests.RequestException as e:
+            print(f"[ERROR] Request failed on page {page}, attempt {attempt}: {e}")
+            if attempt < max_retries:
+                delay = random.uniform(3, 7)
+                print(f"[INFO] Retrying request in {delay:.2f}s...")
+                time.sleep(delay)
+                continue
+            return None
+        except Exception as e:
+            print(f"[ERROR] Unexpected error during search on page {page}: {e}")
+            traceback.print_exc()
+            return None
+            
+    return None
 
 
 def extract_links_from_html(html_content: str) -> List[str]:
@@ -142,8 +199,23 @@ def extract_links_from_html(html_content: str) -> List[str]:
         for idx, a in enumerate(anchors):
             try:
                 href = a.get("href")
-                if href and isinstance(href, str) and href.startswith("http"):
-                    links.append(href)
+                if href and isinstance(href, str):
+                    # Handle DuckDuckGo lite redirects (e.g., //lite.duckduckgo.com/l/?uddg=...)
+                    if 'uddg=' in href:
+                        try:
+                            # Extract the uddg parameter
+                            parsed = urllib.parse.urlparse(href)
+                            qs = urllib.parse.parse_qs(parsed.query)
+                            if 'uddg' in qs:
+                                href = qs['uddg'][0]
+                        except Exception:
+                            pass
+                    
+                    # Unquote to handle URL-encoded components (like instagram.com%2Fusername)
+                    href = urllib.parse.unquote(href)
+                    
+                    if href.startswith("http") or "instagram.com" in href:
+                        links.append(href)
             except Exception as e:
                 print(f"[DEBUG] Error processing anchor {idx}: {e}")
                 continue
@@ -463,11 +535,11 @@ def save_discovered_usernames(
 
 
 def run_discovery():
-    """Main orchestration: DuckDuckGo discovery → Playwright extraction pipeline."""
+    """Main orchestration: Bing discovery → Playwright extraction pipeline."""
     print("\n" + "=" * 80)
     print("INSTAGRAM DISCOVERY & EXTRACTION PIPELINE")
     print("=" * 80)
-    print(f"\n{Fore.CYAN}PHASE 1: DISCOVERING PROFILES VIA DUCKDUCKGO{Style.RESET_ALL}\n")
+    print(f"\n{Fore.CYAN}PHASE 1: DISCOVERING PROFILES VIA BING{Style.RESET_ALL}\n")
 
     keyword = prompt_keyword()
     if not keyword:
@@ -489,6 +561,9 @@ def run_discovery():
     
     max_pages = 5
     
+    # Initialize session for connection reuse
+    session = requests.Session()
+    
     # Pagination loop
     for page_num in range(1, max_pages + 1):
         print(f"\n{'=' * 70}")
@@ -496,7 +571,7 @@ def run_discovery():
         print(f"{'=' * 70}")
         
         # Fetch search results for this page
-        html_content = search_duckduckgo(query, page=page_num)
+        html_content = search_bing(query, page=page_num, session=session)
         if not html_content:
             print(f"[ERROR] Failed to fetch page {page_num}. Stopping pagination.")
             break
