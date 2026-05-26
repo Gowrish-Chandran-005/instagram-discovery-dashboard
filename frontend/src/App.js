@@ -1,89 +1,48 @@
 import React, { useState, useEffect } from 'react';
+import Papa from 'papaparse';
+import { Download, FileJson } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+
 import './App.css';
-
-function ProfileCard({ profile }) {
-  // Format numbers nicely
-  const formatNumber = (num) => {
-    if (num === null || num === undefined) return 'N/A';
-    return Number(num).toLocaleString();
-  };
-
-  return (
-    <div className="profile-card">
-      <div className="profile-image-container">
-        <img 
-          src={profile.profile_image || 'https://via.placeholder.com/120?text=No+Image'} 
-          alt={`${profile.username} profile`} 
-          className="profile-image" 
-          onError={(e) => { e.target.src = 'https://via.placeholder.com/120?text=No+Image'; }}
-        />
-      </div>
-      <div className="profile-info">
-        <h3 className="profile-username">@{profile.username}</h3>
-        
-        <div className="profile-stats">
-          <span><strong>{formatNumber(profile.posts)}</strong> posts</span>
-          <span><strong>{formatNumber(profile.followers)}</strong> followers</span>
-          <span><strong>{formatNumber(profile.following)}</strong> following</span>
-        </div>
-        
-        <div className="profile-bio">
-          {profile.bio || 'No bio available'}
-        </div>
-        
-        {profile.website && (
-          <div className="profile-website">
-            🔗 <a href={profile.website} target="_blank" rel="noreferrer">{profile.website}</a>
-          </div>
-        )}
-        
-        <p className="profile-methods">
-          Extraction Methods: {profile.extraction_methods?.join(', ') || 'None'}
-        </p>
-      </div>
-    </div>
-  );
-}
+import HeroSearch from './components/HeroSearch';
+import ProgressTimeline from './components/ProgressTimeline';
+import ProfileCard from './components/ProfileCard';
+import AnalyticsDashboard from './components/AnalyticsDashboard';
 
 export default function App() {
-  const [keyword, setKeyword] = useState('posters');
   const [loading, setLoading] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [error, setError] = useState(null);
   const [hasSearched, setHasSearched] = useState(false);
-  const [progressMsg, setProgressMsg] = useState('');
+  const [searchMetrics, setSearchMetrics] = useState(null);
 
-  // Auto-update progress message to simulate extraction steps
+  // Search History State
+  const [history, setHistory] = useState([]);
+
   useEffect(() => {
-    let interval;
-    if (loading) {
-      const messages = [
-        'Searching DuckDuckGo for Instagram profiles...',
-        'Discovering new usernames...',
-        'Filtering and removing duplicates...',
-        'Extracting metadata (this may take a few minutes)...',
-        'Extracting metadata (this may take a few minutes)...',
-        'Still extracting, please wait...',
-      ];
-      let i = 0;
-      setProgressMsg(messages[0]);
-      interval = setInterval(() => {
-        i++;
-        if (i < messages.length) {
-          setProgressMsg(messages[i]);
-        }
-      }, 8000);
+    const savedHistory = localStorage.getItem('insta_search_history');
+    if (savedHistory) {
+      try {
+        setHistory(JSON.parse(savedHistory));
+      } catch (e) {
+        console.error('Failed to parse history', e);
+      }
     }
-    return () => clearInterval(interval);
-  }, [loading]);
+  }, []);
 
-  async function handleSearch(e) {
-    e.preventDefault();
+  const saveToHistory = (keyword, count) => {
+    const newHistory = [{ keyword, count, date: new Date().toISOString() }, ...history.filter(h => h.keyword !== keyword)].slice(0, 5);
+    setHistory(newHistory);
+    localStorage.setItem('insta_search_history', JSON.stringify(newHistory));
+  };
+
+  async function handleSearch(keyword) {
     if (!keyword.trim()) return;
 
     setLoading(true);
     setError(null);
     setProfiles([]);
+    setSearchMetrics(null);
     setHasSearched(false);
     
     // Set a timeout of 10 minutes to prevent infinite loading
@@ -93,27 +52,20 @@ export default function App() {
     try {
       const url = `http://localhost:5000/search?keyword=${encodeURIComponent(keyword.trim())}&headless=1`;
       const res = await fetch(url, { signal: controller.signal });
+      const data = await res.json();
 
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (parseErr) {
-        throw new Error(`Invalid JSON response from backend: ${text.slice(0, 100)}...`);
-      }
-
-      // Allow either success=true or the presence of profiles to mark success
-      if (!res.ok) {
-        const msg = data.error || JSON.stringify(data);
-        throw new Error(`Backend error: ${msg}`);
-      }
-      
-      // Even if ok, we should check if there was a server error disguised as success
-      if (data.error && !data.success) {
-        throw new Error(`Backend error: ${data.error}`);
+      if (!res.ok || (data.error && !data.success)) {
+        throw new Error(data.error || 'Unknown backend error');
       }
 
       setProfiles(data.profiles || []);
+      setSearchMetrics({
+        source: data.source,
+        performance: data.performance,
+        failed_count: data.failed_count
+      });
+      
+      saveToHistory(keyword, (data.profiles || []).length);
     } catch (err) {
       if (err.name === 'AbortError') {
         setError('Request timed out. The extraction process took too long.');
@@ -127,52 +79,94 @@ export default function App() {
     }
   }
 
+  // --- EXPORT FUNCTIONS ---
+  const exportToCSV = () => {
+    if (!profiles.length) return;
+    const csvData = profiles.map(p => ({
+      Username: p.username,
+      Followers: p.followers,
+      Following: p.following,
+      Posts: p.posts,
+      Bio: p.bio,
+      Website: p.website,
+      Confidence: p.confidence,
+      Relevance: Math.round((p.relevance || 0) * 100) + '%',
+      Methods: p.extraction_methods?.join(', ')
+    }));
+    
+    const csv = Papa.unparse(csvData);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `instagram_profiles_${new Date().getTime()}.csv`;
+    link.click();
+  };
+
+  const exportToJSON = () => {
+    if (!profiles.length) return;
+    const blob = new Blob([JSON.stringify(profiles, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `instagram_profiles_${new Date().getTime()}.json`;
+    link.click();
+  };
+
   return (
-    <div className="container">
-      <h1>Instagram Discovery Dashboard</h1>
+    <>
+      <div className="bg-blob blob-1"></div>
+      <div className="bg-blob blob-2"></div>
       
-      <form onSubmit={handleSearch} className="search-form">
-        <input 
-          value={keyword} 
-          onChange={e => setKeyword(e.target.value)} 
-          className="search-input"
-          placeholder="Enter keyword (e.g. posters, sarees, boutique)..."
-          disabled={loading}
-        />
-        <button type="submit" className="search-button" disabled={loading || !keyword.trim()}>
-          {loading ? 'Searching...' : 'Discover & Extract'}
-        </button>
-      </form>
+      <div className="app-container">
+        <HeroSearch onSearch={handleSearch} loading={loading} />
+        
+        <ProgressTimeline isActive={loading} isComplete={!loading && hasSearched} />
 
-      {loading && (
-        <div className="loading-container">
-          <div className="spinner"></div>
-          <p><strong>Running extraction pipeline...</strong></p>
-          <p style={{ color: '#5f6368' }}>{progressMsg}</p>
-        </div>
-      )}
+        <AnimatePresence>
+          {error && (
+            <motion.div 
+              className="glass" 
+              style={{ padding: '1.5rem', color: 'var(--danger)', marginBottom: '2rem', borderLeft: '4px solid var(--danger)' }}
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+            >
+              <strong>Extraction Error:</strong> {error}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-      {error && (
-        <div className="error-message">
-          <strong>Error:</strong> {error}
-        </div>
-      )}
+        {hasSearched && profiles.length === 0 && !loading && !error && (
+          <motion.div className="no-results glass" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <h3>No profiles found</h3>
+            <p>We couldn't find any high-quality Instagram profiles. Try adjusting your keyword.</p>
+          </motion.div>
+        )}
 
-      {!loading && !error && hasSearched && profiles.length === 0 && (
-        <div className="no-results">
-          <h3>No profiles found</h3>
-          <p>We couldn't find any relevant Instagram profiles for "{keyword}". Try another keyword.</p>
-        </div>
-      )}
+        {profiles.length > 0 && !loading && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }}>
+            <AnalyticsDashboard profiles={profiles} searchMetrics={searchMetrics} />
+            
+            <div className="profiles-header mt-8">
+              <h2>Discovered Profiles <span className="text-muted">({profiles.length})</span></h2>
+              
+              <div className="actions-group">
+                <button onClick={exportToCSV} className="btn-secondary">
+                  <Download size={16} /> Export CSV
+                </button>
+                <button onClick={exportToJSON} className="btn-secondary">
+                  <FileJson size={16} /> Export JSON
+                </button>
+              </div>
+            </div>
 
-      {!loading && profiles.length > 0 && (
-        <div>
-          <h2>Discovered Profiles ({profiles.length})</h2>
-          {profiles.map((p, i) => (
-            <ProfileCard profile={p} key={i} />
-          ))}
-        </div>
-      )}
-    </div>
+            <div className="profiles-grid">
+              {profiles.map((p, i) => (
+                <ProfileCard profile={p} key={p.username || i} index={i} />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </div>
+    </>
   );
 }
